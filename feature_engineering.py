@@ -314,7 +314,14 @@ df = df.merge(
 )
 
 # =====================================================================
-# SECTION 8: SANITY CHECKS & LEADERBOARD EXPORT
+# SECTION 8: INTERACTION FEATURES
+# =====================================================================
+print("Calculating advanced interaction features...")
+# Elite Wet Modifier: Amplifies the importance of ELO when the race is wet
+df['elite_wet_modifier'] = df['driver_elo_pre'] * df['is_wet_race']
+
+# =====================================================================
+# SECTION 9: SANITY CHECKS & LEADERBOARD EXPORT
 # =====================================================================
 
 # Print ELO Leaderboard at the end of 2025 (to verify Leclerc/Hamilton/Verstappen/Stroll ELO targets)
