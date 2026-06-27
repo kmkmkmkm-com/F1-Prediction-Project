@@ -1,0 +1,7 @@
+f1_cache/
+__pycache__/
+*.ipynb
+partial_race_data_checkpoint.csv
+rich_f1_dataset.csv
+*Copy.md
+iframe_figures/
