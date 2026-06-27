@@ -181,7 +181,8 @@ FEATURE_COLS = [
     'driver_error_dnf_rate_roll5', 'driver_avg_quali_roll5', 'driver_avg_quali_gap_roll5',
     'team_avg_points_roll5', 'team_mech_dnf_rate_roll5', 'team_avg_quali_roll5',
     'is_wet_race', 'is_sprint_weekend', 'air_temp', 'track_temp',
-    'circuit_type_Street', 'circuit_type_High-Downforce', 'circuit_type_Power'
+    'circuit_type_Street', 'circuit_type_High-Downforce', 'circuit_type_Power',
+    'elite_wet_modifier'
 ]
 
 # --- MAIN APP LOGIC ---
@@ -247,16 +248,21 @@ def render_race_dashboard(df, model):
                 race_df[col] = 0.0
         X = race_df[FEATURE_COLS].fillna(0.0)
         
-        probs = model.predict_proba(X)[:, 1]
-        race_df['Podium_Probability'] = probs
+        # XGBRanker outputs arbitrary scores, use Softmax to get Power Ratings
+        raw_scores = model.predict(X)
+        temperature = 1.5 
+        exp_scores = np.exp(raw_scores / temperature)
+        power_ratings = exp_scores / np.sum(exp_scores)
         
-        display_df = race_df[['Abbreviation', 'TeamName', 'GridPosition', 'Podium_Probability', 'Position']].copy()
-        display_df['Podium_Probability_Pct'] = (display_df['Podium_Probability'] * 100).round(1).astype(str) + '%'
-        display_df = display_df.sort_values('Podium_Probability', ascending=False).reset_index(drop=True)
+        race_df['Power_Rating'] = power_ratings
+        
+        display_df = race_df[['Abbreviation', 'TeamName', 'GridPosition', 'Power_Rating', 'Position']].copy()
+        display_df['Power_Rating_Pct'] = (display_df['Power_Rating'] * 100).round(1).astype(str) + '%'
+        display_df = display_df.sort_values('Power_Rating', ascending=False).reset_index(drop=True)
         
         # Clean dataframe for rendering
-        styled_df = display_df[['Abbreviation', 'TeamName', 'GridPosition', 'Podium_Probability_Pct', 'Position']].copy()
-        styled_df = styled_df.rename(columns={'Position': 'Actual Finish', 'Podium_Probability_Pct': 'Probability'})
+        styled_df = display_df[['Abbreviation', 'TeamName', 'GridPosition', 'Power_Rating_Pct', 'Position']].copy()
+        styled_df = styled_df.rename(columns={'Position': 'Actual Finish', 'Power_Rating_Pct': 'Power Rating'})
         
         # Format floats to int strings
         styled_df['Actual Finish'] = styled_df['Actual Finish'].apply(lambda x: str(int(float(x))) if pd.notna(x) and str(x).replace('.','',1).isdigit() else '')
@@ -267,15 +273,15 @@ def render_race_dashboard(df, model):
         
         with res_col1:
             st.markdown("<div class='card'>", unsafe_allow_html=True)
-            st.markdown("<div class='card-header'>Predicted Podium Chances</div>", unsafe_allow_html=True)
+            st.markdown("<div class='card-header'>Predicted Power Ratings</div>", unsafe_allow_html=True)
             
             fig = px.bar(
                 display_df, 
                 x='Abbreviation', 
-                y='Podium_Probability', 
+                y='Power_Rating', 
                 color='TeamName', 
                 color_discrete_map=TEAM_COLORS,
-                text=display_df['Podium_Probability_Pct']
+                text=display_df['Power_Rating_Pct']
             )
             fig.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)', 
@@ -366,16 +372,54 @@ def render_interactive_simulator(df, model):
     input_data['driver_avg_quali_roll5'] = quali_pos
     input_data['driver_avg_quali_gap_roll5'] = 1.5
 
-    input_df = pd.DataFrame([input_data])
-    prob = model.predict_proba(input_df)[0][1]
+    input_data['elite_wet_modifier'] = driver_elo * int(is_wet)
+
+    # To calculate a true Softmax Power Rating, we must predict the entire grid
+    sim_grid = latest_df.copy()
+    
+    # Fill defaults for the whole grid if missing
+    for col in FEATURE_COLS:
+        if col not in sim_grid.columns:
+            sim_grid[col] = 0.0
+            
+    # Apply global race conditions to the entire grid
+    sim_grid['is_wet_race'] = int(is_wet)
+    sim_grid['is_sprint_weekend'] = int(is_sprint)
+    sim_grid['elite_wet_modifier'] = sim_grid['driver_elo_pre'] * int(is_wet)
+    
+    for c_type in ['Street', 'High-Downforce', 'Power', 'Balanced']:
+        if f'circuit_type_{c_type}' in sim_grid.columns:
+            sim_grid[f'circuit_type_{c_type}'] = 1.0 if c_type == circuit_type else 0.0
+            
+    # Replace the selected driver's specific stats with our slider inputs
+    driver_idx = sim_grid[sim_grid['Abbreviation'] == selected_driver].index
+    if not driver_idx.empty:
+        idx = driver_idx[0]
+        for key, val in input_data.items():
+            sim_grid.loc[idx, key] = val
+
+    X_sim = sim_grid[FEATURE_COLS].fillna(0.0)
+    
+    # Predict and Softmax
+    raw_scores = model.predict(X_sim)
+    temperature = 1.5
+    exp_scores = np.exp(raw_scores / temperature)
+    power_ratings = exp_scores / np.sum(exp_scores)
+    
+    sim_grid['Power_Rating'] = power_ratings
+    
+    if not driver_idx.empty:
+        prob = sim_grid.loc[driver_idx[0], 'Power_Rating']
+    else:
+        prob = 0.0
     
     st.markdown("<div class='card'>", unsafe_allow_html=True)
     
     fig = go.Figure(go.Indicator(
         mode = "gauge+number",
         value = prob * 100,
-        number = {'suffix': "%", 'font': {'size': 64, 'color': '#F5F5F5', 'family': 'Inter'}},
-        title = {'text': f"{selected_driver} Podium Probability", 'font': {'size': 14, 'color': '#9A9AA5', 'family': 'Inter'}},
+        number = {'suffix': "", 'font': {'size': 64, 'color': '#F5F5F5', 'family': 'Inter'}},
+        title = {'text': f"{selected_driver} Power Rating (Out of 100)", 'font': {'size': 14, 'color': '#9A9AA5', 'family': 'Inter'}},
         gauge = {
             'axis': {'range': [None, 100], 'tickwidth': 0, 'tickcolor': "rgba(0,0,0,0)", 'tickfont': {'color': 'rgba(0,0,0,0)'}},
             'bar': {'color': "#E10600", 'thickness': 1},
