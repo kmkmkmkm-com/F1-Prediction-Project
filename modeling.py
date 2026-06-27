@@ -45,10 +45,18 @@ df['relevance_score'] = df['Position'].apply(get_relevance)
 # The data is already chronologically sorted, but we must group it strictly by race
 df['race_id'] = df.groupby(['season', 'race_round']).ngroup()
 
+# Add Interaction Feature dynamically
+df['elite_wet_modifier'] = df['driver_elo_pre'] * df['is_wet_race']
+
+# NEW FEATURES TO BEAT BASELINE
+df['quali_penalty'] = df['GridPosition'] - df['quali_position']
+df['is_regulation_reset'] = df['season'].isin([2022, 2026]).astype(int)
+
 # List features we will use for modeling
 feature_cols = [
     'GridPosition',
     'quali_position',
+    'quali_penalty',
     'gap_to_pole_pct',
     'driver_elo_pre',
     'elo_vs_teammate_diff',
@@ -67,7 +75,8 @@ feature_cols = [
     'circuit_type_Street',
     'circuit_type_High-Downforce',
     'circuit_type_Power',
-    'elite_wet_modifier'  # <--- NEW INTERACTION FEATURE
+    'elite_wet_modifier',
+    'is_regulation_reset'
 ]
 
 # Ensure all selected features are clean (no NaNs)

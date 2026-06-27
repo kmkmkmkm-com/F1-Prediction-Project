@@ -176,13 +176,13 @@ def load_data():
     return df
 
 FEATURE_COLS = [
-    'GridPosition', 'quali_position', 'gap_to_pole_pct', 'driver_elo_pre',
+    'GridPosition', 'quali_position', 'quali_penalty', 'gap_to_pole_pct', 'driver_elo_pre',
     'elo_vs_teammate_diff', 'driver_avg_finish_roll5', 'driver_avg_points_roll5',
     'driver_error_dnf_rate_roll5', 'driver_avg_quali_roll5', 'driver_avg_quali_gap_roll5',
     'team_avg_points_roll5', 'team_mech_dnf_rate_roll5', 'team_avg_quali_roll5',
     'is_wet_race', 'is_sprint_weekend', 'air_temp', 'track_temp',
     'circuit_type_Street', 'circuit_type_High-Downforce', 'circuit_type_Power',
-    'elite_wet_modifier'
+    'elite_wet_modifier', 'is_regulation_reset'
 ]
 
 # --- MAIN APP LOGIC ---
@@ -243,13 +243,17 @@ def render_race_dashboard(df, model):
     
     if st.button("Generate Predictions"):
         race_df = season_df[season_df['EventName'] == selected_event].copy()
+        
+        race_df['quali_penalty'] = race_df['GridPosition'] - race_df['quali_position']
+        race_df['is_regulation_reset'] = race_df['season'].isin([2022, 2026]).astype(int)
+        
         for col in FEATURE_COLS:
             if col not in race_df.columns:
                 race_df[col] = 0.0
-        X = race_df[FEATURE_COLS].fillna(0.0)
+        X = race_df[FEATURE_COLS].fillna(0.0).astype(float)
         
-        # XGBRanker outputs arbitrary scores, use Softmax to get Power Ratings
-        raw_scores = model.predict(X)
+        import xgboost as xgb
+        raw_scores = model.get_booster().predict(xgb.DMatrix(X.values, feature_names=FEATURE_COLS))
         temperature = 1.5 
         exp_scores = np.exp(raw_scores / temperature)
         power_ratings = exp_scores / np.sum(exp_scores)
@@ -373,6 +377,8 @@ def render_interactive_simulator(df, model):
     input_data['driver_avg_quali_gap_roll5'] = 1.5
 
     input_data['elite_wet_modifier'] = driver_elo * int(is_wet)
+    input_data['quali_penalty'] = grid_pos - quali_pos
+    input_data['is_regulation_reset'] = int(latest_season in [2022, 2026])
 
     # To calculate a true Softmax Power Rating, we must predict the entire grid
     sim_grid = latest_df.copy()
@@ -386,6 +392,8 @@ def render_interactive_simulator(df, model):
     sim_grid['is_wet_race'] = int(is_wet)
     sim_grid['is_sprint_weekend'] = int(is_sprint)
     sim_grid['elite_wet_modifier'] = sim_grid['driver_elo_pre'] * int(is_wet)
+    sim_grid['quali_penalty'] = sim_grid['GridPosition'] - sim_grid['quali_position']
+    sim_grid['is_regulation_reset'] = int(latest_season in [2022, 2026])
     
     for c_type in ['Street', 'High-Downforce', 'Power', 'Balanced']:
         if f'circuit_type_{c_type}' in sim_grid.columns:
@@ -398,10 +406,11 @@ def render_interactive_simulator(df, model):
         for key, val in input_data.items():
             sim_grid.loc[idx, key] = val
 
-    X_sim = sim_grid[FEATURE_COLS].fillna(0.0)
+    X_sim = sim_grid[FEATURE_COLS].fillna(0.0).astype(float)
     
     # Predict and Softmax
-    raw_scores = model.predict(X_sim)
+    import xgboost as xgb
+    raw_scores = model.get_booster().predict(xgb.DMatrix(X_sim.values, feature_names=FEATURE_COLS))
     temperature = 1.5
     exp_scores = np.exp(raw_scores / temperature)
     power_ratings = exp_scores / np.sum(exp_scores)
